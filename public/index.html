@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>whoapi</title>
+<style>
+  :root { --bg:#0d1117; --card:#161b22; --line:#21262d; --txt:#c9d1d9; --dim:#8b949e; --acc:#58a6ff; --ok:#3fb950; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--txt); font:14px/1.6 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; padding:48px 20px; }
+  main { max-width:880px; margin:0 auto; }
+  h1 { font-size:28px; letter-spacing:-.5px; }
+  h1 span { color:var(--acc); }
+  .sub { color:var(--dim); margin:6px 0 28px; }
+  h2 { font-size:15px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); margin:34px 0 12px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px 16px; }
+  .card b { display:block; font-size:15px; margin-bottom:4px; }
+  .card small { color:var(--dim); }
+  .pill { display:inline-block; font-size:11px; border:1px solid var(--line); border-radius:20px; padding:1px 8px; margin:6px 4px 0 0; color:var(--ok); }
+  .pill.off { color:var(--dim); }
+  table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  th, td { text-align:left; padding:9px 14px; border-bottom:1px solid var(--line); font-size:13px; }
+  th { color:var(--dim); font-weight:600; background:#11161d; }
+  tr:last-child td { border-bottom:0; }
+  code { font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color:var(--acc); background:#0a0e14; padding:1px 6px; border-radius:4px; }
+  .try { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:16px; }
+  .row { display:flex; gap:8px; margin-bottom:10px; flex-wrap:wrap; }
+  select, input { background:#0a0e14; border:1px solid var(--line); color:var(--txt); border-radius:6px; padding:8px 10px; font:13px ui-monospace,Menlo,Consolas,monospace; }
+  input { flex:1; min-width:200px; }
+  button { background:var(--acc); border:0; color:#04121f; font-weight:600; border-radius:6px; padding:8px 18px; cursor:pointer; }
+  button:hover { filter:brightness(1.1); }
+  pre { background:#0a0e14; border:1px solid var(--line); border-radius:6px; padding:14px; overflow:auto; max-height:340px; font:12px/1.5 ui-monospace,Menlo,Consolas,monospace; color:#a5d6ff; white-space:pre-wrap; }
+  footer { margin-top:40px; color:var(--dim); font-size:12px; }
+  a { color:var(--acc); text-decoration:none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>who<span>api</span></h1>
+  <p class="sub">multi-provider anime scraping api &mdash; one endpoint per source, anilist ids in, hls out.</p>
+
+  <h2>Providers</h2>
+  <div class="grid" id="providers"></div>
+
+  <h2>Routes</h2>
+  <table>
+    <tr><th>method</th><th>route</th><th>notes</th></tr>
+    <tr><td>GET</td><td><code>/health</code></td><td>uptime check</td></tr>
+    <tr><td>GET</td><td><code>/providers</code></td><td>provider list + capabilities</td></tr>
+    <tr><td>GET</td><td><code>/map/:anilistId</code></td><td>anilist &rarr; mal/tmdb/tvdb mappings, episode metadata</td></tr>
+    <tr><td>GET</td><td><code>/:provider/search?q=</code></td><td>raw site search</td></tr>
+    <tr><td>GET</td><td><code>/:provider/episodes/:anilistId</code></td><td>anikoto only</td></tr>
+    <tr><td>GET</td><td><code>/anikoto/recent?page=&amp;per_page=</code></td><td>latest additions</td></tr>
+    <tr><td>GET</td><td><code>/watch/:provider/:anilistId/:episode</code></td><td>streams, add <code>?type=sub|dub</code> to filter, <code>?title=</code> to skip the mapping lookup</td></tr>
+  </table>
+
+  <h2>Try it</h2>
+  <div class="try">
+    <div class="row">
+      <select id="route">
+        <option value="/providers">/providers</option>
+        <option value="/map/21">/map/21</option>
+        <option value="/anikoto/recent">/anikoto/recent</option>
+        <option value="/anikoto/search?q=one+piece">/anikoto/search</option>
+        <option value="/watch/anikoto/21/1">/watch/anikoto/21/1</option>
+        <option value="/watch/aniwaves/21/1">/watch/aniwaves/21/1</option>
+        <option value="/watch/animeparadise/21/1">/watch/animeparadise/21/1</option>
+        <option value="/watch/anipm/21/1">/watch/anipm/21/1</option>
+        <option value="/watch/mmani/21/1">/watch/mmani/21/1</option>
+        <option value="/watch/senshi/21/1">/watch/senshi/21/1</option>
+        <option value="/watch/reanime/21/1">/watch/reanime/21/1</option>
+        <option value="/watch/animeonsen/21/1">/watch/animeonsen/21/1</option>
+      </select>
+      <button onclick="go()">send</button>
+    </div>
+    <pre id="out">pick a route and hit send</pre>
+  </div>
+
+  <footer>
+    self-hosted &middot; see <a href="https://github.com/fahadulalim93-cloud/whoapi">README</a> for the go proxy and the anipm sidecar
+  </footer>
+</main>
+<script>
+  fetch("/providers").then(r => r.json()).then(list => {
+    document.getElementById("providers").innerHTML = list.map(p =>
+      `<div class="card"><b>${p.name}</b><small>/watch/${p.id}/:anilistId/:episode</small><br>` +
+      `<span class="pill ${p.search ? "" : "off"}">search</span>` +
+      `<span class="pill ${p.episodes ? "" : "off"}">episodes</span>` +
+      `<span class="pill ${p.recent ? "" : "off"}">recent</span>` +
+      `<span class="pill ${p.sidecar ? "" : "off"}">sidecar</span>` +
+      `<span class="pill ${p.fs ? "" : "off"}">fs</span></div>`
+    ).join("");
+  }).catch(() => {});
+  async function go() {
+    const out = document.getElementById("out");
+    out.textContent = "loading...";
+    const t0 = performance.now();
+    try {
+      const r = await fetch(document.getElementById("route").value);
+      const j = await r.json();
+      out.textContent = `HTTP ${r.status} (${Math.round(performance.now() - t0)}ms)\n\n` + JSON.stringify(j, null, 2).slice(0, 6000);
+    } catch (e) {
+      out.textContent = "request failed: " + e.message;
+    }
+  }
+</script>
+</body>
+</html>

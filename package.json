@@ -1,0 +1,19 @@
+{
+  "name": "whoapi",
+  "version": "1.0.0",
+  "description": "multi-provider anime scraping api",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "proxy": "cd go-proxy && go run main.go"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.22.3"
+  },
+  "license": "MIT",
+  "author": "fahadulalim93-cloud"
+}
