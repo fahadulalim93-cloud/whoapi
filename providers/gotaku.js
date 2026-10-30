@@ -12,9 +12,7 @@ async function renderPage(url, timeout = 30000) {
   return fs.get(url, timeout);
 }
 
-async function buildSlugMap() {
-  if (slugMap && Date.now() - slugMap.ts < 24 * 60 * 60 * 1000) return slugMap;
-
+async function crawlTitles(stopCheck) {
   const browseHtml = await renderPage(`${BASE}/browse`);
   if (!browseHtml) return null;
 
@@ -49,11 +47,50 @@ async function buildSlugMap() {
         byName.set(r.name.toLowerCase(), r.slug);
       }
     }
+    if (stopCheck && stopCheck(byAnilistId, byName)) break;
   }
 
   if (!byAnilistId.size) return null;
-  slugMap = { byAnilistId, byName, ts: Date.now() };
+  return { byAnilistId, byName, ts: Date.now() };
+}
+
+async function buildSlugMap() {
+  if (slugMap && Date.now() - slugMap.ts < 24 * 60 * 60 * 1000) return slugMap;
+  const built = await crawlTitles(null);
+  if (built) slugMap = built;
   return slugMap;
+}
+
+async function findSlug(anilistId, titles) {
+  const wanted = new Set([anilistId]);
+  const wantedNames = new Set();
+  for (const t of titles) wantedNames.add(t.toLowerCase().trim());
+
+  let map = slugMap && Date.now() - slugMap.ts < 24 * 60 * 60 * 1000 ? slugMap : null;
+  if (!map) {
+    map = await crawlTitles((byId, byName) => {
+      for (const id of wanted) if (byId.has(id)) return true;
+      for (const name of wantedNames) {
+        for (const [n, s] of byName) {
+          if (n === name || n.includes(name) || name.includes(n)) return true;
+        }
+      }
+      return false;
+    });
+    if (map) slugMap = map;
+  }
+  if (!map) return null;
+
+  if (map.byAnilistId.has(anilistId)) return map.byAnilistId.get(anilistId);
+
+  for (const t of titles) {
+    const lower = t.toLowerCase().trim();
+    if (map.byName.has(lower)) return map.byName.get(lower);
+    for (const [name, s] of map.byName) {
+      if (name.includes(lower) || lower.includes(name)) return s;
+    }
+  }
+  return null;
 }
 
 async function getEpisodeStream(slug, episodeNum) {
@@ -80,29 +117,11 @@ async function getEpisodeStream(slug, episodeNum) {
 
 async function resolve(anilistId, episode, opts = {}) {
   if (!fs.enabled()) return null;
-  const map = await buildSlugMap();
-  if (!map) return null;
+  const list = [];
+  if (opts.title) list.push(opts.title);
+  list.push(...(await variants(anilistId)));
 
-  let slug = map.byAnilistId.get(anilistId) || null;
-  if (!slug) {
-    const list = [];
-    if (opts.title) list.push(opts.title);
-    list.push(...(await variants(anilistId)));
-    for (const t of list) {
-      const lower = t.toLowerCase().trim();
-      if (map.byName.has(lower)) {
-        slug = map.byName.get(lower);
-        break;
-      }
-      for (const [name, s] of map.byName) {
-        if (name.includes(lower) || lower.includes(name)) {
-          slug = s;
-          break;
-        }
-      }
-      if (slug) break;
-    }
-  }
+  const slug = await findSlug(anilistId, list);
   if (!slug) return null;
 
   const m3u8Url = await getEpisodeStream(slug, episode);

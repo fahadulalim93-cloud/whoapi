@@ -8,16 +8,16 @@ plain node, no database, no auth, no queue. node 18+.
 | id | site | needs | notes |
 |---|---|---|---|
 | `anikoto` | anikototv.to | nothing | megaplay + raw servers, sub + dub, search / episodes / recent |
-| `animeparadise` | animeparadise.moe | nothing | json api + next server action |
+| `animeparadise` | animeparadise.moe | nothing | json api + next server action, direct m3u8 |
 | `aniwaves` | aniwaves.ru | nothing | echovideo extraction, hardsub/softsub/dub |
 | `anipm` | ani.pm | python sidecar | settlar cdn sits behind cloudflare, curl_cffi handles it |
-| `gotaku` | gotaku.to | flaresolverr | SPA site, everything runs through a real browser. first call builds a slug map (slow), then cached 24h |
-| `reanime` | reanime.to | nothing | public api keyed by anilist id. returns flixcloud embeds, the browser decrypts them |
-| `senshi` | senshi.to | go proxy | senshi.to api is open, the cdn (bcdn2.se) 403s non-browser ips, the proxy handles it |
-| `anizone` | anizone.to | flaresolverr | livewire spa behind cloudflare, random slugs, search + episode page both rendered |
-| `nexus` | anime.nexus | go proxy | api.anime.nexus blocks datacenter ips. residential ip or the proxy usually works |
-| `animeonsen` | animeonsen.xyz | flaresolverr (fallback) | direct cookie flow first, flaresolverr only if cloudflare blocks you. returns DASH (.mpd), needs dash.js |
-| `mmani` | mmani.com | nothing | bd/uncensored source. their json api moved recently, this one returns empty until reworked against the new template |
+| `gotaku` | gotaku.to | flaresolverr | SPA site, everything runs through a real browser. resolve crawls the browse page and stops as soon as the requested show is mapped, then cached 24h |
+| `reanime` | reanime.to | nothing | their flixcloud embed is decrypted server side (wasm + aes), you get a real m3u8 with intro/outro chapters. note: flixcloud recently started encrypting the playlist body itself, when that hits you get servers but playback fails until they revert |
+| `senshi` | senshi.to | nothing | search + episodes from senshi.to, streams from the anidap source layer (nero / yuki / zuna / loli) with per-server referers, sub + dub, intro/outro chapters |
+| `anizone` | anizone.to | flaresolverr (fallback) | livewire site, search + episode pages are scraped direct and only fall back to a browser when cloudflare challenges you. open cdn, no referer needed |
+| `nexus` | anime.nexus | go proxy | api.anime.nexus blocks datacenter ips, falls back to flaresolverr for the api calls. the stream itself is ip-bound |
+| `animeonsen` | animeonsen.xyz | flaresolverr (fallback) | direct cookie flow first (ao.session → jwt), flaresolverr only if cloudflare blocks you. returns DASH (.mpd), needs dash.js |
+| `mmani` | mmani.com | flaresolverr | their ajax api fingerprints tls and 403s server-side clients, so the three json calls (search / episodes / eplink) go through a real browser. the final hls url is built from the player id + base64 of the video id |
 | `xanime` | xanime.me | flaresolverr (partial) | ssr gives the latest episode free, older episodes need a rendered page |
 | `anihq` | anihq.cc | flaresolverr | wordpress + kiranime, voe embeds unpacked client-side style |
 
@@ -46,10 +46,10 @@ every provider is keyed by **anilist id**. that's the whole slug system:
   (site slug, ani.pm id, uuid, whatever that site uses). you never see that
   step, it's cached internally per provider:
   - anikoto: title search → site slug → show id → episode servers
-  - mmani: title search → postid → episode api → player config
+  - mmani: ajax episodes keyed by anilist id directly → episode link token → eplink → player url → base64 hls url
   - nexus: catalog crawl → series uuid → episode uuid → stream
-  - gotaku: browse crawl → slug ↔ anilist map (24h cache)
-  - anizone: rendered search → random slug → episode page
+  - gotaku: browse crawl with early exit once the requested show is mapped (24h cache)
+  - anizone: rendered search page → random slug → episode page → vidstack player config
   - reanime: nothing to map, their api takes anilist ids directly
 - `?title=` skips the anilist lookup entirely (useful if you already know
   the title, saves a round trip)
@@ -128,7 +128,7 @@ in `.m3u8`:
 </script>
 ```
 
-setting `Referer` from a browser is not possible on a normal page — that's
+setting `Referer` from a browser is not possible on a normal page, that's
 what the go proxy is for (next section). native apps / server-side players
 can just send the header.
 
@@ -178,17 +178,18 @@ which providers benefit:
 | provider | proxy needed? |
 |---|---|
 | anikoto / animeparadise / aniwaves | no, direct urls work |
-| mmani | optional, helps when anien.top is picky about referer |
-| senshi | yes, the cdn 403s everyone else |
+| anizone | no, the vid-cdn hosts are open |
+| senshi | optional, nero + loli play direct, the go proxy adds the right referer per host automatically |
+| reanime | yes, flixcloud is ip-bound (the token carries your ip) and the playlist body may be encrypted upstream |
 | nexus | yes, same reason |
-| reanime / anikoto embeds | no, those play in the browser |
+| mmani | optional, helps when anien.top is picky about referer |
 | anipm | no, the sidecar rewrites its own manifests |
 
 ## flaresolverr
 
-gotaku, anizone and anihq only work behind a real browser (cloudflare +
-js-rendered pages). xanime and animeonsen use it as a fallback. run it
-anywhere and set the url:
+gotaku and anihq only work behind a real browser (cloudflare + js-rendered
+pages). anizone, nexus, mmani and animeonsen use it as a fallback when the
+direct request gets challenged. run it anywhere and set the url:
 
 ```bash
 docker run -d --name flaresolverr -p 8191:8191 ghcr.io/flaresolverr/flaresolverr:latest
@@ -197,7 +198,9 @@ echo "FLARESOLVERR_URL=http://127.0.0.1:8191" >> .env
 
 without it those providers return empty results, the api itself keeps
 running. expect the first gotaku resolve to take a minute (it crawls and
-builds the slug map), everything after that is cached.
+builds the slug map), everything after that is cached. go easy on it:
+flaresolverr processes one page at a time and hammering it is how you get
+your server ip temp-banned by cloudflare in the first place.
 
 ## anipm sidecar
 
@@ -231,9 +234,12 @@ comes alive.
 
 - anikotoapi.site rate limits at 60 req / 120s per ip, the provider paces itself.
 - provider sites change. when something 404s check the site first, not the api.
-  mmani is the current example: they rebuilt the site on a js template and the
-  old json api this provider used is gone.
-- nexus and senshi are ip-sensitive. same code, different result per network.
-- reanime's api is behind cloudflare and rejects some datacenter ips. if your
-  server gets 403 from it, the same request from a browser or residential ip works.
+- senshi's stream layer comes from the anidap api (`anidap.lol/api/anime/{anilistId}`
+  for the slug, `chad.anidap.lol/rest/api/sources` for the m3u8). their provider
+  roster rotates, the code reads whatever /servers returns, so new names work
+  without a code change.
+- reanime decrypt is self-healing: the wasm blob comes out of the embed page
+  itself (`w_payload`), so when flixcloud rotates their crypto the provider
+  picks up the new payload on the next resolve.
+- nexus and animeonsen are ip-sensitive. same code, different result per network.
 - this is for personal/self-educational use, you are responsible for what you do with it.

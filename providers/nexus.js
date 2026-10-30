@@ -1,4 +1,5 @@
 const { getJson, memo } = require("../core/http");
+const fs = require("../core/flaresolverr");
 const { variants } = require("../core/meta");
 
 const API = process.env.NEXUS_API || "https://api.anime.nexus";
@@ -12,6 +13,22 @@ function slugToTitle(slug) {
 
 function normalize(s) {
   return (s || "").toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
+}
+
+async function apiGet(path) {
+  const data = await getJson(`${API}${path}`, { Accept: "application/json" }, 15000, 0).catch(() => null);
+  if (data) return data;
+  const html = await fs.get(`${API}${path}`, 45000);
+  if (!html) return null;
+  const start = html.indexOf("{");
+  const endArr = html.indexOf("[");
+  const from = endArr >= 0 && (endArr < start || start < 0) ? endArr : start;
+  if (from < 0) return null;
+  try {
+    return JSON.parse(html.slice(from));
+  } catch {
+    return null;
+  }
 }
 
 const catalog = new Map();
@@ -32,7 +49,7 @@ async function buildCatalog() {
   if (catalog.size && Date.now() - catalogAt < 6 * 60 * 60 * 1000) return;
   building = (async () => {
     for (const ep of ["featured", "popular", "latest", "recent", "seasonal"]) {
-      const data = await getJson(`${API}/anime/${ep}`, { Accept: "application/json" }, 15000, 0).catch(() => null);
+      const data = await apiGet(`/anime/${ep}`);
       const items = (data && data.data) || [];
       for (const s of items) ingest(s);
     }
@@ -80,7 +97,7 @@ async function resolve(anilistId, episode, opts = {}) {
   if (!series) return null;
 
   const eps = await memo(`nexus:eps:${series.id}`, 60 * 60 * 1000, async () => {
-    const data = await getJson(`${API}/series/${series.id}`, { Accept: "application/json" }, 20000, 0).catch(() => null);
+    const data = await apiGet(`/series/${series.id}`);
     return (data && data.data) || [];
   });
   if (!eps.length) return null;
@@ -88,7 +105,7 @@ async function resolve(anilistId, episode, opts = {}) {
   if (!ep) return null;
 
   const stream = await memo(`nexus:stream:${ep.id}`, 30 * 60 * 1000, async () => {
-    const data = await getJson(`${API}/stream/${ep.id}`, { Accept: "application/json" }, 20000, 0).catch(() => null);
+    const data = await apiGet(`/stream/${ep.id}`);
     return (data && data.data) || null;
   });
   if (!stream || !stream.hls) return null;

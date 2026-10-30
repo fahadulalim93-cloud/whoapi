@@ -2,7 +2,7 @@ const { getText, getJson, postText, memo } = require("../core/http");
 
 const API = "https://api.animeparadise.moe";
 const SITE = "https://www.animeparadise.moe";
-const ACTION_ID = "60b2d177f9d6893f2ace2dd05d5abb6fa1e6ca16bc";
+const ACTION_ID = "60edb8d72ddf7f3fdfbfc1303642e4829b0825ddef";
 
 const HEADERS = {
   Accept: "application/json",

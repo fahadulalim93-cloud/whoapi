@@ -2,7 +2,14 @@ const { getJson, postText, memo } = require("../core/http");
 const { variants } = require("../core/meta");
 
 const SENSHI = "https://senshi.to";
-const VIDCLOUD = "https://s.vidcloud.se";
+const ANIDAP_MAP = "https://anidap.lol/api/anime";
+const ANIDAP_API = "https://chad.anidap.lol/rest/api";
+const ANIDAP_HEADERS = {
+  Accept: "application/json, text/plain, */*",
+  "Accept-Language": "en-US,en;q=0.9",
+  Origin: "https://anidap.lol",
+  Referer: "https://anidap.lol/",
+};
 
 const HEADERS = {
   Accept: "application/json, */*",
@@ -30,7 +37,6 @@ async function filterPage(term) {
 }
 
 async function searchSenshi(title) {
-  const seen = new Set();
   const variants = [
     title,
     title.replace(/[-:]\s*[^-:]+$/, "").trim(),
@@ -48,6 +54,7 @@ async function searchSenshi(title) {
     if (exact) return exact;
   }
 
+  const seen = new Set();
   const unique = all.filter((a) => (seen.has(a.id) ? false : (seen.add(a.id), true)));
   if (!unique.length) return null;
 
@@ -76,18 +83,63 @@ async function getEpisodes(animeId) {
   return Array.isArray(data) ? data : [];
 }
 
-async function getEmbeds(animeId, epNum) {
-  const data = await getJson(`${SENSHI}/episode-embeds/${animeId}/${epNum}`, HEADERS, 10000, 0).catch(() => null);
-  return Array.isArray(data) ? data : [];
+async function anidapSlug(anilistId) {
+  return memo(`anidap:slug:${anilistId}`, 24 * 60 * 60 * 1000, async () => {
+    const data = await getJson(`${ANIDAP_MAP}/${anilistId}`, ANIDAP_HEADERS, 10000, 0).catch(() => null);
+    if (!data || !data.success || !data.data || !data.data.id) return null;
+    return data.data.id;
+  });
 }
 
-function mapLang(label) {
-  const l = (label || "").toLowerCase();
-  if (l.includes("fre")) return "fr";
-  if (l.includes("ger")) return "de";
-  if (l.includes("spa")) return "es";
-  if (l.includes("por")) return "pt";
-  return "en";
+async function anidapServers(slug, epNum) {
+  return memo(`anidap:srv:${slug}:${epNum}`, 60 * 60 * 1000, async () => {
+    const data = await getJson(`${ANIDAP_API}/servers?id=${encodeURIComponent(slug)}&epNum=${epNum}`, ANIDAP_HEADERS, 12000, 0).catch(() => null);
+    if (!data) return { sub: [], dub: [] };
+    return {
+      sub: (data.subProviders || []).map((p) => p.id),
+      dub: (data.dubProviders || []).map((p) => p.id),
+    };
+  });
+}
+
+async function anidapSources(slug, epNum, type, providerId) {
+  const key = `anidap:src:${slug}:${epNum}:${type}:${providerId}`;
+  return memo(key, 30 * 60 * 1000, async () => {
+    const url = `${ANIDAP_API}/sources?id=${encodeURIComponent(slug)}&epNum=${epNum}&type=${type}&providerId=${providerId}`;
+    const data = await getJson(url, ANIDAP_HEADERS, 15000, 0).catch(() => null);
+    if (!data || !Array.isArray(data.sources) || !data.sources.length) return null;
+    const first = data.sources[0];
+    if (!first || !first.url) return null;
+    const subtitles = [];
+    for (const t of data.tracks || []) {
+      if (!t || !t.url) continue;
+      const fixed = String(t.url).replace(":///", "://");
+      subtitles.push({ url: fixed, lang: (t.lang || "en").substring(0, 2).toLowerCase(), label: t.label || t.lang || "English" });
+    }
+    let intro = null;
+    let outro = null;
+    for (const c of data.chapters || []) {
+      if (!c || typeof c.start !== "number" || typeof c.end !== "number") continue;
+      const title = (c.title || "").toLowerCase();
+      if (!intro && title.includes("intro")) intro = { start: c.start, end: c.end };
+      if (!outro && (title.includes("outro") || title.includes("ending"))) outro = { start: c.start, end: c.end };
+    }
+    return {
+      url: first.url,
+      quality: first.quality || "auto",
+      type: first.type || "",
+      referer: (data.headers && data.headers.Referer) || "",
+      subtitles,
+      intro,
+      outro,
+    };
+  });
+}
+
+function serverName(providerId, type, quality) {
+  const labels = { nero: "Nero", yuki: "Yuki", zuna: "Zuna", loli: "Loli", mimi: "Mimi", beep: "Beep", sora: "Sora", kiwi: "Kiwi", uwu: "Uwu" };
+  const base = labels[providerId] || providerId.toUpperCase();
+  return `${base} ${type === "dub" ? "(Dub)" : ""}`.trim();
 }
 
 async function resolve(anilistId, episode, opts = {}) {
@@ -107,48 +159,32 @@ async function resolve(anilistId, episode, opts = {}) {
   const target = eps.find((e) => e.ep_id === episode) || eps[0];
   if (!target) return null;
 
-  const embeds = await getEmbeds(anime.id, target.ep_id);
-  if (!embeds.length) return null;
+  const slug = await anidapSlug(anilistId);
+  if (!slug) return null;
+
+  const catalog = await anidapServers(slug, target.ep_id);
+  const picks = [];
+  for (const id of catalog.sub) picks.push({ providerId: id, type: "sub" });
+  for (const id of catalog.dub) picks.push({ providerId: id, type: "dub" });
+  if (!picks.length) return null;
 
   const servers = [];
-  for (const embed of embeds) {
-    const sources = await getJson(`${VIDCLOUD}/_v1/sources?id=${embed.remote_source_id}`, {
-      ...HEADERS,
-      Referer: `${SENSHI}/`,
-    }, 10000, 0).catch(() => null);
-    if (!Array.isArray(sources)) continue;
-    for (const src of sources) {
-      const m3u8 = src.source && src.source.src;
-      if (!m3u8 || servers.some((s) => s.url === m3u8)) continue;
-      const type = src.source.audio === "dub" ? "dub" : "sub";
-      const subtitles = [];
-      for (const track of src.tracks || []) {
-        const label = (track.label || "").toLowerCase();
-        if (label === "chapter" || label === "storyboard" || label.includes("thumbnail")) continue;
-        if (track.vtt_url) {
-          subtitles.push({ url: track.vtt_url, lang: mapLang(track.label), label: track.label || "English" });
-        }
-      }
-      const intro =
-        embed.intro_start_ms != null && embed.intro_end_ms != null
-          ? { start: embed.intro_start_ms / 1000, end: embed.intro_end_ms / 1000 }
-          : null;
-      const outro =
-        embed.outro_start_ms != null && embed.outro_end_ms != null
-          ? { start: embed.outro_start_ms / 1000, end: embed.outro_end_ms / 1000 }
-          : null;
-      servers.push({
-        name: `Deo ${embed.status === "HardSub" ? "Hardsub" : "1"}${type === "dub" ? " (Dub)" : ""}`,
-        type,
-        quality: (src.source && src.source.quality) || "1080p",
-        url: m3u8,
-        embed: "",
-        referer: `${SENSHI}/`,
-        subtitles,
-        intro,
-        outro,
-      });
-    }
+  const seenUrl = new Set();
+  for (const pick of picks) {
+    const src = await anidapSources(slug, target.ep_id, pick.type, pick.providerId);
+    if (!src || seenUrl.has(src.url)) continue;
+    seenUrl.add(src.url);
+    servers.push({
+      name: serverName(pick.providerId, pick.type, src.quality),
+      type: pick.type,
+      quality: src.quality === "auto" ? "1080p" : src.quality,
+      url: src.url,
+      embed: "",
+      referer: src.referer,
+      subtitles: src.subtitles,
+      intro: src.intro,
+      outro: src.outro,
+    });
   }
   if (!servers.length) return null;
   return { servers, intro: servers[0].intro, outro: servers[0].outro };
